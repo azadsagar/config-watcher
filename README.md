@@ -48,8 +48,8 @@ Run the watcher with a 10-second polling interval:
 ./config-watcher -config=/mnt/nfs/config.yaml -cmd="/usr/local/bin/daemon" -interval=10s
 ```
 
-## TO DO
-- Add custom kill signal with command line flag to avoid sending default `SIGTERM` when config. Useful where child process has ability to reload itself instead of restarting.
+## To Do
+- Add custom kill signal with command line flag to avoid sending default `SIGTERM` when config file changes. Useful where child process has ability to reload itself instead of restarting.
 - Watch remote configs (via apis) instead of watching local files.
 
 ## License
