@@ -16,9 +16,10 @@ var (
 	daemonCmd    string
 	pollInterval time.Duration
 	cmd          *exec.Cmd
-	restarting   bool
-	mu           sync.Mutex
+	wg           sync.WaitGroup
 )
+
+var restartChan = make(chan struct{})
 
 func main() {
 	// Parse command-line flags
@@ -93,66 +94,56 @@ func startDaemon() bool {
 
 	log.Printf("Started daemon with PID %d", cmd.Process.Pid)
 
-	// Monitor daemon process exit immediately
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				log.Printf("Daemon exited with status %d", exitErr.ExitCode())
-				os.Exit(exitErr.ExitCode()) // Exit with the same status as the daemon
+	wg.Add(1)
+
+	go func(proc *os.Process) {
+		defer wg.Done()
+
+		exitChan := make(chan error, 1)
+
+		// Monitor process exit
+		go func() {
+			exitChan <- cmd.Wait()
+		}()
+
+		select {
+		case <-restartChan:
+			log.Printf("Daemon with PID %d exited due to restart, continuing...", proc.Pid)
+			return
+		case err := <-exitChan:
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					log.Printf("Daemon with PID %d exited with status %d", proc.Pid, exitErr.ExitCode())
+					os.Exit(exitErr.ExitCode()) // Exit if crashed
+				} else {
+					log.Printf("Daemon with PID %d exited with error: %v", proc.Pid, err)
+					os.Exit(1)
+				}
 			} else {
-				log.Printf("Daemon exited with error: %v", err)
-				os.Exit(1)
+				log.Printf("Daemon with PID %d exited cleanly.", proc.Pid)
+				os.Exit(0)
 			}
-		} else {
-			log.Println("Daemon exited cleanly.")
-			os.Exit(0) // Exit watcher if daemon exits cleanly
 		}
-	}()
+	}(cmd.Process)
 
 	return true
 }
 
 // restartDaemon stops the current daemon and starts a new one
 func restartDaemon() bool {
-	mu.Lock()
-	restarting = true
-	mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
 		log.Println("Stopping daemon gracefully...")
 
-		// Send SIGTERM for graceful shutdown
+		restartChan <- struct{}{}
+
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			log.Printf("Failed to send SIGTERM: %v", err)
 		}
 
-		// Wait for process to exit, with a timeout
-		done := make(chan error, 1)
-		go func() {
-			done <- cmd.Wait()
-		}()
-
-		select {
-		case <-time.After(10 * time.Second): // Timeout
-			log.Println("Daemon did not exit in time, force killing...")
-			if err := cmd.Process.Kill(); err != nil {
-				log.Printf("Failed to kill process: %v", err)
-			}
-			<-done // Ensure goroutine exits
-		case err := <-done:
-			if err != nil {
-				log.Printf("inside restartDaemon method")
-				log.Printf("Daemon exited with error: %v", err)
-				//cleanupAndExit()
-			} else {
-				log.Println("Daemon exited cleanly.")
-			}
-		}
+		// Wait for the goroutine to confirm cleanup
+		wg.Wait()
 	}
-
-	mu.Lock()
-	restarting = false
-	mu.Unlock()
 
 	return startDaemon()
 }
